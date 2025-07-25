@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3-Omega Thermal Conductivity Calculator</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 0; background-color: #f0f0f0; color: #333; display: flex; height: 100vh; overflow: hidden; }
+        #app-container { 
+            display: flex; 
+            flex-direction: column;
+            background-color: #ffffff; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+            overflow: hidden; 
+            width: 98%; 
+            max-width: 1800px; 
+            height: 100vh; /* Fill the full viewport height */
+            margin: 0 auto; /* Remove vertical margin, keep horizontal centering */
+        }
+        #main-content { 
+            display: flex; 
+            flex: 1; /* This makes the content area grow to fill available space */
+            min-height: 0; /* Prevents flexbox overflow issues */
+        }
+        #controls-panel {
+            width: 380px;
+            min-width: 300px;
+            max-width: 600px;
+            flex-shrink: 0;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+        }
+        #drag-handle { width: 6px; cursor: col-resize; background-color: #e0e0e0; flex-shrink: 0; transition: background-color 0.2s; }
+        #drag-handle:hover { background-color: #007bff; }
+        #controls-panel h1 { font-size: 1.5em; margin-top: 0; margin-bottom: 20px; color: #004494; }
+        .control-group { margin-bottom: 18px; }
+        .control-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.9em; }
+        .control-row { display: flex; align-items: center; gap: 10px; }
+        .control-row input[type="number"] { width: 100px; flex-shrink: 0; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; text-align: right; color: #111827; }
+        .control-row input[type="range"] { flex-grow: 1; }
+        #visualization-area { flex-grow: 1; position: relative; background-color: #ffffff; min-width: 0; display: flex; flex-direction: column; padding: 1.5rem; }
+        #plot-container { flex-grow: 1; width: 100%; height: 100%; }
+        #plot-container svg { width: 100%; height: 100%; }
+        .info-box { background-color: #e9f5ff; border-left: 4px solid #007bff; padding: 15px; margin-top: 20px; font-size: 0.9em; border-radius: 4px; }
+        .info-box h3 { margin-top: 0; color: #004494; }
+        .button-group { display: flex; gap: 10px; margin-top: 20px; }
+        button { background-color: #007bff; color: white; border: none; padding: 12px 15px; border-radius: 5px; cursor: pointer; font-weight: 600; width: 100%; transition: background-color 0.2s; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        footer { 
+            padding: 8px 20px; 
+            background-color: #f9f9f9; 
+            border-top: 1px solid #e0e0e0; 
+            display: flex; 
+            justify-content: space-between; 
+            font-size: 0.8em; 
+            color: #666; 
+            flex-shrink: 0;
+        }
+
+        /* D3 Plot Styles */
+        .axis path, .axis .tick line { stroke: #888; }
+        .axis .tick text { fill: #555; font-size: 14px; }
+        .line { fill: none; stroke-width: 2.5px; }
+        .line.v3x { stroke: #1f77b4; }
+        .line.v3y { stroke: #ff7f0e; }
+        .line-linear { stroke-width: 5px; }
+        .axis-label { font-size: 16px; fill: #333; font-weight: 500; }
+        .legend { font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <div id="main-content">
+            <div id="controls-panel">
+                <h1>3-Omega Signal Calculator</h1>
+                
+                <div class="control-group">
+                    <label for="resistance">Total Wire Resistance (R₀) [Ω]</label>
+                    <div class="control-row"><input type="number" id="resistance" value="100"></div>
+                </div>
+                 <div class="control-group">
+                    <label for="wire-length">Wire Length (L) [mm]</label>
+                    <div class="control-row"><input type="number" id="wire-length" value="5"></div>
+                </div>
+                <div class="control-group">
+                    <label for="wire-width">Wire Width (2b) [mm]</label>
+                    <div class="control-row"><input type="number" id="wire-width" value="0.01"></div>
+                </div>
+                <div class="control-group">
+                    <label for="tcr">Thermal Coeff. of Resistance (α) [1/K]</label>
+                    <div class="control-row"><input type="number" id="tcr" value="0.003"></div>
+                </div>
+                <div class="control-group">
+                    <label for="kappa-substrate">Substrate Thermal Conductivity (κₛ) [W/mK]</label>
+                    <div class="control-row"><input type="number" id="kappa-substrate" value="10"></div>
+                </div>
+                <div class="control-group">
+                    <label for="thickness-substrate">Substrate Thickness (dₛ) [mm]</label>
+                    <div class="control-row"><input type="number" id="thickness-substrate" value="0.5"></div>
+                </div>
+                <div class="control-group">
+                    <label for="diffusivity-substrate">Substrate Thermal Diffusivity (Dₛ) [mm²/s]</label>
+                    <div class="control-row"><input type="number" id="diffusivity-substrate" value="1"></div>
+                </div>
+                <div class="control-group">
+                    <label for="current">Heating Current (I₀) [A, peak]</label>
+                    <div class="control-row"><input type="number" id="current" value="0.01"></div>
+                </div>
+                
+                <hr style="margin: 25px 0; border: 1px solid #ddd;">
+
+                <div class="control-group">
+                    <label for="plot-fmin">Plot Min Frequency (Hz)</label>
+                    <div class="control-row">
+                        <input type="range" id="plot-fmin-slider" min="-1.7" max="5" step="0.01" value="0">
+                        <input type="number" id="plot-fmin" value="1">
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label for="plot-fmax">Plot Max Frequency (Hz)</label>
+                    <div class="control-row">
+                        <input type="range" id="plot-fmax-slider" min="-1.7" max="5" step="0.01" value="3">
+                        <input type="number" id="plot-fmax" value="1000">
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button id="save-data-button">Save .dat</button>
+                    <button id="save-pdf-button">Save .pdf</button>
+                </div>
+
+                <div class="info-box" id="linearity-domain">
+                    <h3>Linearity Domain</h3>
+                    <p>Min Frequency (f_min): <span id="f-min">N/A</span> Hz</p>
+                    <p>Max Frequency (f_max): <span id="f-max">N/A</span> Hz</p>
+                    <hr style="border-top: 1px solid #cdeaff; margin: 10px 0;">
+                    <p>Power (P_rms/L): <span id="power-rms">N/A</span> W/m</p>
+                </div>
+            </div>
+            <div id="drag-handle"></div>
+            <div id="visualization-area">
+                <div id="plot-container"></div>
+            </div>
+        </div>
+        <footer>
+            <span>sim_3-omega, v 0.9</span>
+            <span>NitaD, Univ Paris-Saclay</span>
+        </footer>
+    </div>
+
+    <script>
+        const { jsPDF } = window.jspdf;
+
+        // --- Complex Number Math ---
+        const Complex = {
+            create: (re = 0, im = 0) => ({ re, im }),
+            add: (a, b) => ({ re: a.re + b.re, im: a.im + b.im }),
+            subtract: (a, b) => ({ re: a.re - b.re, im: a.im - b.im }),
+            multiply: (a, b) => ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }),
+            multiplyScalar: (c, s) => ({ re: c.re * s, im: c.im * s }),
+            divide: (a, b) => {
+                const d = b.re * b.re + b.im * b.im;
+                if (d === 0) return { re: Infinity, im: Infinity };
+                return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d };
+            },
+            sqrt: c => {
+                const r = Math.sqrt(c.re * c.re + c.im * c.im);
+                const theta = Math.atan2(c.im, c.re);
+                const sqrt_r = Math.sqrt(r);
+                return { re: sqrt_r * Math.cos(theta / 2), im: sqrt_r * Math.sin(theta / 2) };
+            },
+            magnitude: c => Math.sqrt(c.re * c.re + c.im * c.im),
+        };
+
+        let fullPlotData = [];
+        let linearityRange = {f_min: 0, f_max: 0};
+
+        // --- Core Calculation using Cahill's Integral Formula ---
+        function calculate3Omega() {
+            const R0 = parseFloat(document.getElementById('resistance').value);
+            const L = parseFloat(document.getElementById('wire-length').value) * 1e-3; // to meters
+            const two_b = parseFloat(document.getElementById('wire-width').value) * 1e-3; // to meters
+            const b = two_b / 2;
+            const alpha_tcr = parseFloat(document.getElementById('tcr').value);
+            const kappa_s = parseFloat(document.getElementById('kappa-substrate').value);
+            const d_s = parseFloat(document.getElementById('thickness-substrate').value) * 1e-3; // to meters
+            const D_s = parseFloat(document.getElementById('diffusivity-substrate').value) * 1e-6; // to m^2/s
+            const I0_peak = parseFloat(document.getElementById('current').value);
+
+            if ([R0, L, two_b, alpha_tcr, kappa_s, d_s, D_s, I0_peak].some(isNaN) || L === 0) {
+                fullPlotData = [];
+                return;
+            }
+            
+            const R_per_l = R0 / L;
+            const P_per_l = (I0_peak * I0_peak / 2) * R_per_l; 
+            document.getElementById('power-rms').textContent = P_per_l.toExponential(2);
+
+
+            const data = [];
+            const f_min_log10 = Math.log10(0.02); // Start at 0.02 Hz
+            const f_max_log10 = 5; // 10^5 Hz
+            const steps = 400; // Increased number of points
+
+            const N_integ = 1000;
+            const eta_max = 50 / b;
+
+            for (let i = 0; i <= steps; i++) {
+                const f = Math.pow(10, f_min_log10 + (i / steps) * (f_max_log10 - f_min_log10));
+                const omega = 2 * Math.PI * f;
+                
+                const q_squared = Complex.create(0, 2 * omega / D_s);
+
+                const integrand = (eta) => {
+                    if (eta === 0) {
+                        const sinc_sq = 1;
+                        const denom_sqrt = Complex.sqrt(q_squared);
+                        return Complex.divide(Complex.create(sinc_sq, 0), denom_sqrt);
+                    }
+                    const eta_b = eta * b;
+                    const sin_eta_b = Math.sin(eta_b);
+                    const sinc_sq = (sin_eta_b * sin_eta_b) / (eta_b * eta_b);
+                    const eta_squared = Complex.create(eta * eta, 0);
+                    const denom_sqrt_arg = Complex.add(eta_squared, q_squared);
+                    const denom_sqrt = Complex.sqrt(denom_sqrt_arg);
+                    return Complex.divide(Complex.create(sinc_sq, 0), denom_sqrt);
+                };
+
+                let integral_result = Complex.create(0, 0);
+                const h = eta_max / N_integ;
+                for (let j = 0; j <= N_integ; j++) {
+                    const eta = j * h;
+                    const term = integrand(eta);
+                    let coeff = (j === 0 || j === N_integ) ? 1 : (j % 2 !== 0 ? 4 : 2);
+                    integral_result = Complex.add(integral_result, Complex.multiplyScalar(term, coeff));
+                }
+                integral_result = Complex.multiplyScalar(integral_result, h / 3);
+
+                const prefactor = P_per_l / (Math.PI * kappa_s);
+                const deltaT_complex = Complex.multiplyScalar(integral_result, prefactor);
+                
+                const V1_peak = I0_peak * R0;
+                const V3_complex_peak = Complex.multiplyScalar(deltaT_complex, 0.5 * V1_peak * alpha_tcr);
+                const V3_complex_rms = Complex.multiplyScalar(V3_complex_peak, 1 / Math.sqrt(2));
+
+                data.push({
+                    ln_2omega: Math.log(2 * omega),
+                    frequency: f,
+                    deltaT_in_phase: deltaT_complex.re,
+                    deltaT_out_of_phase: deltaT_complex.im,
+                    v3_rms_in_phase: V3_complex_rms.re,
+                    v3_rms_out_of_phase: V3_complex_rms.im,
+                });
+            }
+            
+            linearityRange.f_min = (25 * D_s) / (4 * Math.PI * d_s * d_s);
+            linearityRange.f_max = D_s / (100 * Math.PI * b * b);
+            
+            document.getElementById('f-min').textContent = linearityRange.f_min.toExponential(2);
+            document.getElementById('f-max').textContent = linearityRange.f_max.toExponential(2);
+
+            fullPlotData = data;
+        }
+
+        // --- D3.js Plotting ---
+        const margin = { top: 60, right: 80, bottom: 90, left: 80 };
+        const container = d3.select("#plot-container");
+        let svg, xScale, yScaleLeft, yScaleRight, xAxisBottom, xAxisTop, yAxisLeft, yAxisRight;
+        let isPlotInitialized = false;
+
+        function initPlot() {
+            const bounds = container.node().getBoundingClientRect();
+            if (bounds.width <= 0 || bounds.height <= 0) return;
+            const height = bounds.height;
+            const width = bounds.width;
+
+            svg = container.append("svg").attr("viewBox", `0 0 ${width} ${height}`);
+            const plotArea = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+
+            xScale = d3.scaleLinear().range([0, plotWidth]);
+            yScaleLeft = d3.scaleLinear().range([plotHeight, 0]);
+            yScaleRight = d3.scaleLinear().range([plotHeight, 0]);
+
+            xAxisBottom = plotArea.append("g").attr("class", "axis x-axis-bottom").attr("transform", `translate(0,${plotHeight})`);
+            xAxisTop = plotArea.append("g").attr("class", "axis x-axis-top");
+            yAxisLeft = plotArea.append("g").attr("class", "axis y-axis-left");
+            yAxisRight = plotArea.append("g").attr("class", "axis y-axis-right").attr("transform", `translate(${plotWidth},0)`);
+
+            svg.append("text").attr("class", "axis-label").attr("id", "x-label-bottom").attr("text-anchor", "middle");
+            svg.append("text").attr("class", "axis-label").attr("id", "x-label-top").attr("text-anchor", "middle");
+            svg.append("text").attr("class", "axis-label").attr("id", "y-label-left").attr("transform", "rotate(-90)").attr("text-anchor", "middle");
+            svg.append("text").attr("class", "axis-label").attr("id", "y-label-right").attr("transform", "rotate(-90)").attr("text-anchor", "middle");
+
+            plotArea.append("path").attr("class", "line v3x");
+            plotArea.append("path").attr("class", "line v3y");
+            plotArea.append("path").attr("class", "line v3x line-linear");
+            plotArea.append("path").attr("class", "line v3y line-linear");
+            
+            const legend = svg.append("g").attr("class", "legend");
+            const legendItems = [{ label: "V3x (in-phase, RMS)", color: "#1f77b4" }, { label: "V3y (out-of-phase, RMS)", color: "#ff7f0e" }];
+            legendItems.forEach((item, i) => {
+                const legendItem = legend.append("g").attr("transform", `translate(${i * 220}, 0)`);
+                legendItem.append("rect").attr("width", 15).attr("height", 15).style("fill", item.color);
+                legendItem.append("text").attr("x", 20).attr("y", 12).text(item.label);
+            });
+
+            isPlotInitialized = true;
+        }
+
+        function drawPlot() {
+            if (fullPlotData.length === 0) return;
+            if (!isPlotInitialized) initPlot();
+            if (!isPlotInitialized) return;
+
+            const f_min_plot = parseFloat(document.getElementById('plot-fmin').value);
+            const f_max_plot = parseFloat(document.getElementById('plot-fmax').value);
+            const data = fullPlotData.filter(d => d.frequency >= f_min_plot && d.frequency <= f_max_plot);
+            if (data.length === 0) return;
+            
+            const bounds = container.node().getBoundingClientRect();
+            const width = bounds.width;
+            const height = bounds.height;
+            svg.attr("viewBox", `0 0 ${width} ${height}`);
+
+            const plotWidth = width - margin.left - margin.right;
+            const plotHeight = height - margin.top - margin.bottom;
+
+            xScale.domain(d3.extent(data, d => d.ln_2omega)).range([0, plotWidth]);
+            const tempMin = d3.min(data, d => Math.min(d.deltaT_in_phase, d.deltaT_out_of_phase));
+            const tempMax = d3.max(data, d => Math.max(d.deltaT_in_phase, d.deltaT_out_of_phase));
+            yScaleLeft.domain([tempMin, tempMax]).range([plotHeight, 0]).nice();
+            
+            const voltMin = d3.min(data, d => Math.min(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
+            const voltMax = d3.max(data, d => Math.max(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
+            yScaleRight.domain([voltMin, voltMax]).range([plotHeight, 0]).nice();
+
+            const topXScale = d3.scaleLog().domain(d3.extent(data, d => d.frequency)).range([0, plotWidth]);
+
+            xAxisBottom.attr("transform", `translate(0,${plotHeight})`).call(d3.axisBottom(xScale).ticks(7));
+            xAxisTop.call(d3.axisTop(topXScale).ticks(5, ".0e"));
+            yAxisLeft.call(d3.axisLeft(yScaleLeft).ticks(5, ".2e"));
+            yAxisRight.attr("transform", `translate(${plotWidth},0)`).call(d3.axisRight(yScaleRight).ticks(5, ".2e"));
+
+            svg.select("#x-label-bottom").attr("x", margin.left + plotWidth / 2).attr("y", height - margin.bottom + 50).text("ln(2ω)");
+            svg.select("#x-label-top").attr("x", margin.left + plotWidth / 2).attr("y", 35).text("Frequency (Hz)");
+            svg.select("#y-label-left").attr("y", 25).attr("x", 0 - (margin.top + plotHeight / 2)).text("Temperature Oscillation (K)");
+            svg.select("#y-label-right").attr("y", width - 25).attr("x", 0 - (margin.top + plotHeight / 2)).text("V3 (RMS) [V]");
+            
+            svg.select(".legend").attr("transform", `translate(${(plotWidth - 380) / 2 + margin.left}, ${height - 25})`);
+
+            const lineV3x = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_in_phase));
+            const lineV3y = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_out_of_phase));
+
+            svg.select(".line.v3x").datum(data).transition().duration(50).attr("d", lineV3x);
+            svg.select(".line.v3y").datum(data).transition().duration(50).attr("d", lineV3y);
+
+            const linearData = data.filter(d => d.frequency >= linearityRange.f_min && d.frequency <= linearityRange.f_max);
+            svg.select(".line.v3x.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3x);
+            svg.select(".line.v3y.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3y);
+        }
+
+        // --- UI and Event Handlers ---
+        function setupControls() {
+            document.querySelectorAll('#controls-panel input[type="number"]').forEach(input => {
+                if(input.id.startsWith('plot-')) return;
+                input.addEventListener('change', () => {
+                    calculate3Omega();
+                    drawPlot();
+                });
+            });
+
+            const fminSlider = document.getElementById('plot-fmin-slider');
+            const fminValue = document.getElementById('plot-fmin');
+            const fmaxSlider = document.getElementById('plot-fmax-slider');
+            const fmaxValue = document.getElementById('plot-fmax');
+
+            fminSlider.addEventListener('input', () => {
+                const f = Math.pow(10, fminSlider.value);
+                fminValue.value = f.toExponential(2);
+                if (parseFloat(fmaxSlider.value) < parseFloat(fminSlider.value)) {
+                    fmaxSlider.value = fminSlider.value;
+                    fmaxValue.value = f.toExponential(2);
+                }
+                drawPlot();
+            });
+             fmaxSlider.addEventListener('input', () => {
+                const f = Math.pow(10, fmaxSlider.value);
+                fmaxValue.value = f.toExponential(2);
+                 if (parseFloat(fmaxSlider.value) < parseFloat(fminSlider.value)) {
+                    fminSlider.value = fmaxSlider.value;
+                    fminValue.value = f.toExponential(2);
+                }
+                drawPlot();
+            });
+            fminValue.addEventListener('change', () => {
+                fminSlider.value = Math.log10(fminValue.value);
+                drawPlot();
+            });
+            fmaxValue.addEventListener('change', () => {
+                fmaxSlider.value = Math.log10(fmaxValue.value);
+                drawPlot();
+            });
+
+            document.getElementById('save-data-button').addEventListener('click', exportDataFile);
+            document.getElementById('save-pdf-button').addEventListener('click', exportPDF);
+        }
+
+        function exportDataFile() {
+            if (fullPlotData.length === 0) return;
+            let content = "# 3-Omega Data (Cahill Model)\n# Parameters:\n";
+            ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current']
+                .forEach(id => content += `# ${document.querySelector(`label[for='${id}']`).textContent}: ${document.getElementById(id).value}\n`);
+            content += "# ---\n";
+            content += "ln(2w)\tFreq(Hz)\tDeltaT_in-phase(K)\tDeltaT_out-of-phase(K)\tV3_rms_in-phase(V)\tV3_rms_out-of-phase(V)\n";
+            fullPlotData.forEach(row => {
+                content += `${row.ln_2omega.toExponential(4)}\t${row.frequency.toExponential(4)}\t${row.deltaT_in_phase.toExponential(4)}\t${row.deltaT_out_of_phase.toExponential(4)}\t${row.v3_rms_in_phase.toExponential(4)}\t${row.v3_rms_out_of_phase.toExponential(4)}\n`;
+            });
+            const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = `3omega_data_${new Date().toISOString().replace(/[:.]/g, '-')}.dat`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        async function exportPDF() {
+            const btn = document.getElementById('save-pdf-button');
+            btn.textContent = 'Generating...';
+            btn.disabled = true;
+
+            try {
+                const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+                const margin = 15;
+                let yPos = margin;
+
+                // 1. Title
+                pdf.setFontSize(18);
+                pdf.text("3-Omega Simulation Report", pageWidth / 2, yPos, { align: 'center' });
+                yPos += 8;
+                pdf.setFontSize(10);
+                pdf.text(`sim_3-omega, v 0.9 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
+                yPos += 12;
+
+                // 2. Parameters
+                pdf.setFontSize(14);
+                pdf.text("Simulation Parameters", margin, yPos);
+                yPos += 6;
+                pdf.setLineWidth(0.2);
+                pdf.line(margin, yPos, pageWidth - margin, yPos);
+                yPos += 8;
+
+                pdf.setFontSize(10);
+                const paramIDs = ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current'];
+                
+                // Function to sanitize labels for PDF to avoid font issues
+                const sanitizeLabel = (label) => {
+                    return label
+                        .replace(/₀/g, '0')
+                        .replace(/ₛ/g, 's')
+                        .replace(/κ/g, 'k')
+                        .replace(/α/g, 'alpha')
+                        .replace(/Ω/g, 'Ohm');
+                };
+
+                paramIDs.forEach(id => {
+                    const originalLabel = document.querySelector(`label[for='${id}']`).textContent;
+                    const sanitizedLabel = sanitizeLabel(originalLabel);
+                    const value = document.getElementById(id).value;
+                    const lineText = `${sanitizedLabel}: ${value}`;
+                    pdf.text(lineText, margin, yPos);
+                    yPos += 7; 
+                });
+                
+                // 3. Calculated Results
+                yPos += 5;
+                pdf.setFontSize(14);
+                pdf.text("Calculated Results", margin, yPos);
+                yPos += 6;
+                pdf.line(margin, yPos, pageWidth - margin, yPos);
+                yPos += 8;
+                pdf.setFontSize(10);
+                
+                const fminText = `Min Frequency (f_min): ${document.getElementById('f-min').textContent} Hz`;
+                pdf.text(fminText, margin, yPos);
+                yPos += 7;
+
+                const fmaxText = `Max Frequency (f_max): ${document.getElementById('f-max').textContent} Hz`;
+                pdf.text(fmaxText, margin, yPos);
+                yPos += 7;
+
+                const powerText = `Power (P_rms/L): ${document.getElementById('power-rms').textContent} W/m`;
+                pdf.text(powerText, margin, yPos);
+                yPos += 12;
+
+                // 4. Graph
+                const visArea = document.getElementById('visualization-area');
+                const canvas = await html2canvas(visArea, { scale: 3, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+                const imgData = canvas.toDataURL('image/png');
+                const imgWidth = pageWidth - 2 * margin;
+                const imgHeight = (canvas.height * imgWidth) / canvas.width;
+                pdf.addImage(imgData, 'PNG', margin, yPos, imgWidth, imgHeight);
+
+                // 5. Footer
+                pdf.setFontSize(8);
+                pdf.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
+                pdf.text('sim_3-omega, v 0.9', margin, pageHeight - 8);
+                pdf.text('NitaD, Univ Paris-Saclay', pageWidth - margin, pageHeight - 8, { align: 'right' });
+
+                pdf.save(`3omega_report_${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`);
+
+            } catch (error) {
+                console.error("Error generating PDF:", error);
+            } finally {
+                btn.textContent = 'Save .pdf';
+                btn.disabled = false;
+            }
+        }
+
+        const resizer = document.getElementById('drag-handle');
+        const leftPanel = document.getElementById('controls-panel');
+        let isResizing = false;
+        resizer.addEventListener('mousedown', e => {
+            e.preventDefault(); isResizing = true;
+            document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+            window.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', stopResize);
+        });
+        function handleMouseMove(e) {
+            if (!isResizing) return;
+            const newLeftWidth = e.clientX - resizer.parentElement.getBoundingClientRect().left;
+            if (newLeftWidth > 300 && newLeftWidth < resizer.parentElement.clientWidth - 400) {
+                leftPanel.style.width = `${newLeftWidth}px`;
+                drawPlot();
+            }
+        }
+        function stopResize() {
+            isResizing = false;
+            document.body.style.cursor = 'default'; document.body.style.userSelect = 'auto';
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', stopResize);
+        }
+        
+        window.addEventListener('load', () => {
+            setupControls();
+            calculate3Omega();
+            new ResizeObserver(drawPlot).observe(container.node());
+            drawPlot();
+        });
+    </script>
+</body>
+</html>
