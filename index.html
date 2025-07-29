@@ -9,19 +9,19 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style>
         body { font-family: system-ui, sans-serif; margin: 0; background-color: #f0f0f0; color: #333; display: flex; height: 100vh; overflow: hidden; }
-        #app-container { 
-            display: flex; 
+        #app-container {
+            display: flex;
             flex-direction: column;
-            background-color: #ffffff; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
-            overflow: hidden; 
-            width: 98%; 
-            max-width: 1800px; 
+            background-color: #ffffff;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            overflow: hidden;
+            width: 98%;
+            max-width: 1800px;
             height: 100vh; /* Fill the full viewport height */
             margin: 0 auto; /* Remove vertical margin, keep horizontal centering */
         }
-        #main-content { 
-            display: flex; 
+        #main-content {
+            display: flex;
             flex: 1; /* This makes the content area grow to fill available space */
             min-height: 0; /* Prevents flexbox overflow issues */
         }
@@ -41,7 +41,9 @@
         .control-group { margin-bottom: 18px; }
         .control-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.9em; }
         .control-row { display: flex; align-items: center; gap: 10px; }
-        .control-row input[type="number"] { width: 100px; flex-shrink: 0; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; text-align: right; color: #111827; }
+        .control-row input[type="number"], .control-row select { width: 100px; flex-shrink: 0; padding: 8px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box; color: #111827; }
+        .control-row input[type="number"] { text-align: right; }
+        .control-row select { width: 100%; }
         .control-row input[type="range"] { flex-grow: 1; }
         #visualization-area { flex-grow: 1; position: relative; background-color: #ffffff; min-width: 0; display: flex; flex-direction: column; padding: 1.5rem; }
         #plot-container { flex-grow: 1; width: 100%; height: 100%; }
@@ -52,14 +54,14 @@
         button { background-color: #007bff; color: white; border: none; padding: 12px 15px; border-radius: 5px; cursor: pointer; font-weight: 600; width: 100%; transition: background-color 0.2s; }
         button:hover { background-color: #0056b3; }
         button:disabled { background-color: #cccccc; cursor: not-allowed; }
-        footer { 
-            padding: 8px 20px; 
-            background-color: #f9f9f9; 
-            border-top: 1px solid #e0e0e0; 
-            display: flex; 
-            justify-content: space-between; 
-            font-size: 0.8em; 
-            color: #666; 
+        footer {
+            padding: 8px 20px;
+            background-color: #f9f9f9;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8em;
+            color: #666;
             flex-shrink: 0;
         }
 
@@ -79,7 +81,7 @@
         <div id="main-content">
             <div id="controls-panel">
                 <h1>3-Omega Signal Calculator</h1>
-                
+
                 <div class="control-group">
                     <label for="resistance">Total Wire Resistance (R₀) [Ω]</label>
                     <div class="control-row"><input type="number" id="resistance" value="100"></div>
@@ -112,7 +114,16 @@
                     <label for="current">Heating Current (I₀) [A, peak]</label>
                     <div class="control-row"><input type="number" id="current" value="0.01"></div>
                 </div>
-                
+
+                <div class="control-group">
+                    <label for="boundary-condition">Substrate Boundary Condition</label>
+                    <div class="control-row">
+                        <select id="boundary-condition">
+                            <option value="infinite" selected>Semi-infinite substrate</option>
+                            <option value="isothermal">Finite (isothermal bottom)</option>
+                        </select>
+                    </div>
+                </div>
                 <hr style="margin: 25px 0; border: 1px solid #ddd;">
 
                 <div class="control-group">
@@ -149,15 +160,15 @@
             </div>
         </div>
         <footer>
-            <span>sim_3-omega, v 0.9</span>
+            <span>sim_3-omega, v 1.0</span>
             <span>NitaD, Univ Paris-Saclay</span>
         </footer>
     </div>
 
-    <script>
+<script>
         const { jsPDF } = window.jspdf;
 
-        // --- Complex Number Math ---
+        // --- Complex Number Math (Unchanged) ---
         const Complex = {
             create: (re = 0, im = 0) => ({ re, im }),
             add: (a, b) => ({ re: a.re + b.re, im: a.im + b.im }),
@@ -176,37 +187,59 @@
                 return { re: sqrt_r * Math.cos(theta / 2), im: sqrt_r * Math.sin(theta / 2) };
             },
             magnitude: c => Math.sqrt(c.re * c.re + c.im * c.im),
+            sinh: c => {
+                return {
+                    re: Math.sinh(c.re) * Math.cos(c.im),
+                    im: Math.cosh(c.re) * Math.sin(c.im)
+                };
+            },
+            cosh: c => {
+                return {
+                    re: Math.cosh(c.re) * Math.cos(c.im),
+                    im: Math.sinh(c.re) * Math.sin(c.im)
+                };
+            },
+            coth: c => {
+                if (c.re > 30) return { re: 1, im: 0 };
+                if (c.re < -30) return { re: -1, im: 0 };
+                const sinh_c = Complex.sinh(c);
+                const cosh_c = Complex.cosh(c);
+                if (Complex.magnitude(sinh_c) < 1e-14) {
+                    return { re: 1e14, im: 0 };
+                }
+                return Complex.divide(cosh_c, sinh_c);
+            },
         };
 
         let fullPlotData = [];
         let linearityRange = {f_min: 0, f_max: 0};
 
-        // --- Core Calculation using Cahill's Integral Formula ---
+        // --- Core Calculation (Unchanged) ---
         function calculate3Omega() {
             const R0 = parseFloat(document.getElementById('resistance').value);
-            const L = parseFloat(document.getElementById('wire-length').value) * 1e-3; // to meters
-            const two_b = parseFloat(document.getElementById('wire-width').value) * 1e-3; // to meters
+            const L = parseFloat(document.getElementById('wire-length').value) * 1e-3;
+            const two_b = parseFloat(document.getElementById('wire-width').value) * 1e-3;
             const b = two_b / 2;
             const alpha_tcr = parseFloat(document.getElementById('tcr').value);
             const kappa_s = parseFloat(document.getElementById('kappa-substrate').value);
-            const d_s = parseFloat(document.getElementById('thickness-substrate').value) * 1e-3; // to meters
-            const D_s = parseFloat(document.getElementById('diffusivity-substrate').value) * 1e-6; // to m^2/s
+            const d_s = parseFloat(document.getElementById('thickness-substrate').value) * 1e-3;
+            const D_s = parseFloat(document.getElementById('diffusivity-substrate').value) * 1e-6;
             const I0_peak = parseFloat(document.getElementById('current').value);
+            const boundaryCondition = document.getElementById('boundary-condition').value;
 
             if ([R0, L, two_b, alpha_tcr, kappa_s, d_s, D_s, I0_peak].some(isNaN) || L === 0) {
                 fullPlotData = [];
                 return;
             }
-            
+
             const R_per_l = R0 / L;
-            const P_per_l = (I0_peak * I0_peak / 2) * R_per_l; 
+            const P_per_l = (I0_peak * I0_peak / 2) * R_per_l;
             document.getElementById('power-rms').textContent = P_per_l.toExponential(2);
 
-
             const data = [];
-            const f_min_log10 = Math.log10(0.02); // Start at 0.02 Hz
-            const f_max_log10 = 5; // 10^5 Hz
-            const steps = 400; // Increased number of points
+            const f_min_log10 = Math.log10(0.02);
+            const f_max_log10 = 5;
+            const steps = 400;
 
             const N_integ = 1000;
             const eta_max = 50 / b;
@@ -214,22 +247,27 @@
             for (let i = 0; i <= steps; i++) {
                 const f = Math.pow(10, f_min_log10 + (i / steps) * (f_max_log10 - f_min_log10));
                 const omega = 2 * Math.PI * f;
-                
                 const q_squared = Complex.create(0, 2 * omega / D_s);
 
                 const integrand = (eta) => {
-                    if (eta === 0) {
-                        const sinc_sq = 1;
-                        const denom_sqrt = Complex.sqrt(q_squared);
-                        return Complex.divide(Complex.create(sinc_sq, 0), denom_sqrt);
-                    }
                     const eta_b = eta * b;
-                    const sin_eta_b = Math.sin(eta_b);
-                    const sinc_sq = (sin_eta_b * sin_eta_b) / (eta_b * eta_b);
+                    const sinc_sq = (eta === 0) ? 1 : Math.pow(Math.sin(eta_b) / eta_b, 2);
+                    const sinc_complex = Complex.create(sinc_sq, 0);
                     const eta_squared = Complex.create(eta * eta, 0);
-                    const denom_sqrt_arg = Complex.add(eta_squared, q_squared);
-                    const denom_sqrt = Complex.sqrt(denom_sqrt_arg);
-                    return Complex.divide(Complex.create(sinc_sq, 0), denom_sqrt);
+                    const gamma_squared = Complex.add(eta_squared, q_squared);
+                    const gamma = Complex.sqrt(gamma_squared);
+
+                    if (Complex.magnitude(gamma) < 1e-9) return Complex.create(0, 0);
+
+                    let thermal_term;
+                    if (boundaryCondition === 'isothermal') {
+                        const gamma_ds = Complex.multiplyScalar(gamma, d_s);
+                        const coth_gamma_ds = Complex.coth(gamma_ds);
+                        thermal_term = Complex.divide(coth_gamma_ds, gamma);
+                    } else {
+                        thermal_term = Complex.divide(Complex.create(1, 0), gamma);
+                    }
+                    return Complex.multiply(sinc_complex, thermal_term);
                 };
 
                 let integral_result = Complex.create(0, 0);
@@ -244,7 +282,6 @@
 
                 const prefactor = P_per_l / (Math.PI * kappa_s);
                 const deltaT_complex = Complex.multiplyScalar(integral_result, prefactor);
-                
                 const V1_peak = I0_peak * R0;
                 const V3_complex_peak = Complex.multiplyScalar(deltaT_complex, 0.5 * V1_peak * alpha_tcr);
                 const V3_complex_rms = Complex.multiplyScalar(V3_complex_peak, 1 / Math.sqrt(2));
@@ -258,17 +295,15 @@
                     v3_rms_out_of_phase: V3_complex_rms.im,
                 });
             }
-            
+
             linearityRange.f_min = (25 * D_s) / (4 * Math.PI * d_s * d_s);
             linearityRange.f_max = D_s / (100 * Math.PI * b * b);
-            
             document.getElementById('f-min').textContent = linearityRange.f_min.toExponential(2);
             document.getElementById('f-max').textContent = linearityRange.f_max.toExponential(2);
-
             fullPlotData = data;
         }
 
-        // --- D3.js Plotting ---
+        // --- D3.js Plotting (Unchanged) ---
         const margin = { top: 60, right: 80, bottom: 90, left: 80 };
         const container = d3.select("#plot-container");
         let svg, xScale, yScaleLeft, yScaleRight, xAxisBottom, xAxisTop, yAxisLeft, yAxisRight;
@@ -279,32 +314,25 @@
             if (bounds.width <= 0 || bounds.height <= 0) return;
             const height = bounds.height;
             const width = bounds.width;
-
             svg = container.append("svg").attr("viewBox", `0 0 ${width} ${height}`);
             const plotArea = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-
             const plotWidth = width - margin.left - margin.right;
             const plotHeight = height - margin.top - margin.bottom;
-
             xScale = d3.scaleLinear().range([0, plotWidth]);
             yScaleLeft = d3.scaleLinear().range([plotHeight, 0]);
             yScaleRight = d3.scaleLinear().range([plotHeight, 0]);
-
             xAxisBottom = plotArea.append("g").attr("class", "axis x-axis-bottom").attr("transform", `translate(0,${plotHeight})`);
             xAxisTop = plotArea.append("g").attr("class", "axis x-axis-top");
             yAxisLeft = plotArea.append("g").attr("class", "axis y-axis-left");
             yAxisRight = plotArea.append("g").attr("class", "axis y-axis-right").attr("transform", `translate(${plotWidth},0)`);
-
             svg.append("text").attr("class", "axis-label").attr("id", "x-label-bottom").attr("text-anchor", "middle");
             svg.append("text").attr("class", "axis-label").attr("id", "x-label-top").attr("text-anchor", "middle");
             svg.append("text").attr("class", "axis-label").attr("id", "y-label-left").attr("transform", "rotate(-90)").attr("text-anchor", "middle");
             svg.append("text").attr("class", "axis-label").attr("id", "y-label-right").attr("transform", "rotate(-90)").attr("text-anchor", "middle");
-
             plotArea.append("path").attr("class", "line v3x");
             plotArea.append("path").attr("class", "line v3y");
             plotArea.append("path").attr("class", "line v3x line-linear");
             plotArea.append("path").attr("class", "line v3y line-linear");
-            
             const legend = svg.append("g").attr("class", "legend");
             const legendItems = [{ label: "V3x (in-phase, RMS)", color: "#1f77b4" }, { label: "V3y (out-of-phase, RMS)", color: "#ff7f0e" }];
             legendItems.forEach((item, i) => {
@@ -312,7 +340,6 @@
                 legendItem.append("rect").attr("width", 15).attr("height", 15).style("fill", item.color);
                 legendItem.append("text").attr("x", 20).attr("y", 12).text(item.label);
             });
-
             isPlotInitialized = true;
         }
 
@@ -320,55 +347,43 @@
             if (fullPlotData.length === 0) return;
             if (!isPlotInitialized) initPlot();
             if (!isPlotInitialized) return;
-
             const f_min_plot = parseFloat(document.getElementById('plot-fmin').value);
             const f_max_plot = parseFloat(document.getElementById('plot-fmax').value);
             const data = fullPlotData.filter(d => d.frequency >= f_min_plot && d.frequency <= f_max_plot);
             if (data.length === 0) return;
-            
             const bounds = container.node().getBoundingClientRect();
             const width = bounds.width;
             const height = bounds.height;
             svg.attr("viewBox", `0 0 ${width} ${height}`);
-
             const plotWidth = width - margin.left - margin.right;
             const plotHeight = height - margin.top - margin.bottom;
-
             xScale.domain(d3.extent(data, d => d.ln_2omega)).range([0, plotWidth]);
             const tempMin = d3.min(data, d => Math.min(d.deltaT_in_phase, d.deltaT_out_of_phase));
             const tempMax = d3.max(data, d => Math.max(d.deltaT_in_phase, d.deltaT_out_of_phase));
             yScaleLeft.domain([tempMin, tempMax]).range([plotHeight, 0]).nice();
-            
             const voltMin = d3.min(data, d => Math.min(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
             const voltMax = d3.max(data, d => Math.max(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
             yScaleRight.domain([voltMin, voltMax]).range([plotHeight, 0]).nice();
-
             const topXScale = d3.scaleLog().domain(d3.extent(data, d => d.frequency)).range([0, plotWidth]);
-
             xAxisBottom.attr("transform", `translate(0,${plotHeight})`).call(d3.axisBottom(xScale).ticks(7));
             xAxisTop.call(d3.axisTop(topXScale).ticks(5, ".0e"));
             yAxisLeft.call(d3.axisLeft(yScaleLeft).ticks(5, ".2e"));
             yAxisRight.attr("transform", `translate(${plotWidth},0)`).call(d3.axisRight(yScaleRight).ticks(5, ".2e"));
-
             svg.select("#x-label-bottom").attr("x", margin.left + plotWidth / 2).attr("y", height - margin.bottom + 50).text("ln(2ω)");
             svg.select("#x-label-top").attr("x", margin.left + plotWidth / 2).attr("y", 35).text("Frequency (Hz)");
             svg.select("#y-label-left").attr("y", 25).attr("x", 0 - (margin.top + plotHeight / 2)).text("Temperature Oscillation (K)");
             svg.select("#y-label-right").attr("y", width - 25).attr("x", 0 - (margin.top + plotHeight / 2)).text("V3 (RMS) [V]");
-            
             svg.select(".legend").attr("transform", `translate(${(plotWidth - 380) / 2 + margin.left}, ${height - 25})`);
-
             const lineV3x = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_in_phase));
             const lineV3y = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_out_of_phase));
-
             svg.select(".line.v3x").datum(data).transition().duration(50).attr("d", lineV3x);
             svg.select(".line.v3y").datum(data).transition().duration(50).attr("d", lineV3y);
-
             const linearData = data.filter(d => d.frequency >= linearityRange.f_min && d.frequency <= linearityRange.f_max);
             svg.select(".line.v3x.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3x);
             svg.select(".line.v3y.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3y);
         }
 
-        // --- UI and Event Handlers ---
+        // --- UI and Event Handlers (Unchanged) ---
         function setupControls() {
             document.querySelectorAll('#controls-panel input[type="number"]').forEach(input => {
                 if(input.id.startsWith('plot-')) return;
@@ -377,12 +392,14 @@
                     drawPlot();
                 });
             });
-
+            document.getElementById('boundary-condition').addEventListener('change', () => {
+                calculate3Omega();
+                drawPlot();
+            });
             const fminSlider = document.getElementById('plot-fmin-slider');
             const fminValue = document.getElementById('plot-fmin');
             const fmaxSlider = document.getElementById('plot-fmax-slider');
             const fmaxValue = document.getElementById('plot-fmax');
-
             fminSlider.addEventListener('input', () => {
                 const f = Math.pow(10, fminSlider.value);
                 fminValue.value = f.toExponential(2);
@@ -409,7 +426,6 @@
                 fmaxSlider.value = Math.log10(fmaxValue.value);
                 drawPlot();
             });
-
             document.getElementById('save-data-button').addEventListener('click', exportDataFile);
             document.getElementById('save-pdf-button').addEventListener('click', exportPDF);
         }
@@ -419,6 +435,8 @@
             let content = "# 3-Omega Data (Cahill Model)\n# Parameters:\n";
             ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current']
                 .forEach(id => content += `# ${document.querySelector(`label[for='${id}']`).textContent}: ${document.getElementById(id).value}\n`);
+            const bc_select = document.getElementById('boundary-condition');
+            content += `# Boundary Condition: ${bc_select.options[bc_select.selectedIndex].text}\n`;
             content += "# ---\n";
             content += "ln(2w)\tFreq(Hz)\tDeltaT_in-phase(K)\tDeltaT_out-of-phase(K)\tV3_rms_in-phase(V)\tV3_rms_out-of-phase(V)\n";
             fullPlotData.forEach(row => {
@@ -433,10 +451,22 @@
             document.body.removeChild(link);
         }
 
+        // --- Start of Corrected Code ---
         async function exportPDF() {
             const btn = document.getElementById('save-pdf-button');
             btn.textContent = 'Generating...';
             btn.disabled = true;
+
+            const visArea = document.getElementById('visualization-area');
+            const clone = visArea.cloneNode(true);
+            const bounds = visArea.getBoundingClientRect();
+
+            clone.style.position = 'absolute';
+            clone.style.top = '0px';
+            clone.style.left = '-9999px';
+            clone.style.width = `${bounds.width}px`;
+            clone.style.height = `${bounds.height}px`;
+            document.body.appendChild(clone);
 
             try {
                 const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
@@ -450,7 +480,7 @@
                 pdf.text("3-Omega Simulation Report", pageWidth / 2, yPos, { align: 'center' });
                 yPos += 8;
                 pdf.setFontSize(10);
-                pdf.text(`sim_3-omega, v 0.9 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
+                pdf.text(`sim_3-omega, v 1.4 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
                 yPos += 12;
 
                 // 2. Parameters
@@ -460,29 +490,20 @@
                 pdf.setLineWidth(0.2);
                 pdf.line(margin, yPos, pageWidth - margin, yPos);
                 yPos += 8;
-
                 pdf.setFontSize(10);
                 const paramIDs = ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current'];
-                
-                // Function to sanitize labels for PDF to avoid font issues
                 const sanitizeLabel = (label) => {
-                    return label
-                        .replace(/₀/g, '0')
-                        .replace(/ₛ/g, 's')
-                        .replace(/κ/g, 'k')
-                        .replace(/α/g, 'alpha')
-                        .replace(/Ω/g, 'Ohm');
+                    return label.replace(/₀/g, '0').replace(/ₛ/g, 's').replace(/κ/g, 'k').replace(/α/g, 'alpha').replace(/Ω/g, 'Ohm');
                 };
-
                 paramIDs.forEach(id => {
                     const originalLabel = document.querySelector(`label[for='${id}']`).textContent;
-                    const sanitizedLabel = sanitizeLabel(originalLabel);
-                    const value = document.getElementById(id).value;
-                    const lineText = `${sanitizedLabel}: ${value}`;
-                    pdf.text(lineText, margin, yPos);
-                    yPos += 7; 
+                    pdf.text(`${sanitizeLabel(originalLabel)}: ${document.getElementById(id).value}`, margin, yPos);
+                    yPos += 7;
                 });
-                
+                const bc_select = document.getElementById('boundary-condition');
+                pdf.text(`Boundary Condition: ${bc_select.options[bc_select.selectedIndex].text}`, margin, yPos);
+                yPos += 7;
+
                 // 3. Calculated Results
                 yPos += 5;
                 pdf.setFontSize(14);
@@ -491,42 +512,63 @@
                 pdf.line(margin, yPos, pageWidth - margin, yPos);
                 yPos += 8;
                 pdf.setFontSize(10);
-                
-                const fminText = `Min Frequency (f_min): ${document.getElementById('f-min').textContent} Hz`;
-                pdf.text(fminText, margin, yPos);
+                pdf.text(`Min Frequency (f_min): ${document.getElementById('f-min').textContent} Hz`, margin, yPos);
                 yPos += 7;
-
-                const fmaxText = `Max Frequency (f_max): ${document.getElementById('f-max').textContent} Hz`;
-                pdf.text(fmaxText, margin, yPos);
+                pdf.text(`Max Frequency (f_max): ${document.getElementById('f-max').textContent} Hz`, margin, yPos);
                 yPos += 7;
-
-                const powerText = `Power (P_rms/L): ${document.getElementById('power-rms').textContent} W/m`;
-                pdf.text(powerText, margin, yPos);
+                pdf.text(`Power (P_rms/L): ${document.getElementById('power-rms').textContent} W/m`, margin, yPos);
                 yPos += 12;
 
                 // 4. Graph
-                const visArea = document.getElementById('visualization-area');
-                const canvas = await html2canvas(visArea, { scale: 3, useCORS: true, logging: false, backgroundColor: '#ffffff' });
+                const canvas = await html2canvas(clone, {
+                    scale: 2,
+                    useCORS: true,
+                    logging: false,
+                    backgroundColor: '#ffffff'
+                });
                 const imgData = canvas.toDataURL('image/png');
-                const imgWidth = pageWidth - 2 * margin;
-                const imgHeight = (canvas.height * imgWidth) / canvas.width;
-                pdf.addImage(imgData, 'PNG', margin, yPos, imgWidth, imgHeight);
+
+                // --- Auto-scaling logic to fit the image on the page ---
+                const canvasAspectRatio = canvas.height / canvas.width;
+                const availableWidth = pageWidth - 2 * margin;
+                let finalImgWidth = availableWidth;
+                let finalImgHeight = finalImgWidth * canvasAspectRatio;
+
+                const availableHeight = pageHeight - yPos - margin;
+
+                // If the image is too tall for the remaining space, scale it down.
+                if (finalImgHeight > availableHeight) {
+                    finalImgHeight = availableHeight;
+                    finalImgWidth = finalImgHeight / canvasAspectRatio; // Scale width to maintain aspect ratio
+                }
+
+                if (finalImgHeight > 0) {
+                    // Center the potentially smaller image horizontally
+                    const xOffset = margin + (availableWidth - finalImgWidth) / 2;
+                    pdf.addImage(imgData, 'PNG', xOffset, yPos, finalImgWidth, finalImgHeight);
+                } else {
+                     pdf.text("Error: Graph could not be rendered.", margin, yPos);
+                }
+                // --- End of auto-scaling logic ---
 
                 // 5. Footer
                 pdf.setFontSize(8);
                 pdf.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
-                pdf.text('sim_3-omega, v 0.9', margin, pageHeight - 8);
+                pdf.text('sim_3-omega, v 1.4', margin, pageHeight - 8);
                 pdf.text('NitaD, Univ Paris-Saclay', pageWidth - margin, pageHeight - 8, { align: 'right' });
 
                 pdf.save(`3omega_report_${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`);
 
             } catch (error) {
                 console.error("Error generating PDF:", error);
+                alert("An error occurred while generating the PDF. Please check the console for details.");
             } finally {
+                document.body.removeChild(clone);
                 btn.textContent = 'Save .pdf';
                 btn.disabled = false;
             }
         }
+        // --- End of Corrected Code ---
 
         const resizer = document.getElementById('drag-handle');
         const leftPanel = document.getElementById('controls-panel');
@@ -551,7 +593,7 @@
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', stopResize);
         }
-        
+
         window.addEventListener('load', () => {
             setupControls();
             calculate3Omega();
@@ -559,5 +601,6 @@
             drawPlot();
         });
     </script>
+
 </body>
 </html>
