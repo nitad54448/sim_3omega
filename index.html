@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3-Omega Thermal Conductivity Calculator</title>
+    <title>v1.5.0 — 3-Omega Thermal Conductivity Calculator</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -147,12 +147,14 @@
                 </div>
 
                 <div class="info-box" id="linearity-domain">
-                    <h3>Linearity Domain</h3>
+                    <h3>Checked logarithmic range</h3><p style="font-size:12px">Longest sampled interval with ≤1% complex-response deviation from the strip asymptote and ≤2% slope deviation. Bounds are limited to the simulated sweep.</p>
                     <p>Min Frequency (f_min): <span id="f-min">N/A</span> Hz</p>
                     <p>Max Frequency (f_max): <span id="f-max">N/A</span> Hz</p>
                     <hr style="border-top: 1px solid #cdeaff; margin: 10px 0;">
-                    <p>Power (P_rms/L): <span id="power-rms">N/A</span> W/m</p>
+                    <p>Average heating power (P/L): <span id="power-rms">N/A</span> W/m</p>
                 </div>
+                <p id="simulation-status" role="status" aria-live="polite" style="font-size:13px;line-height:1.5"></p>
+                <p style="font-size:12px;color:#64748b;line-height:1.5">Uniform-strip, width-averaged, linear thermal model. ΔT is a peak complex amplitude; V₃ is RMS. The exp(+i2ωt) convention gives a negative imaginary response. No statistical input uncertainties are included.</p>
             </div>
             <div id="drag-handle"></div>
             <div id="visualization-area">
@@ -160,152 +162,139 @@
             </div>
         </div>
         <footer>
-            <span>sim_3-omega, 12 juin 2025</span>
+            <span>sim_3-omega, v1.5.0 — 14 September 2026</span>
             <span>NitaD, Univ Paris-Saclay</span>
         </footer>
     </div>
 
 <script>
-        const { jsPDF } = window.jspdf;
+        
 
-        // --- Complex Number Math (Unchanged) ---
-        const Complex = {
-            create: (re = 0, im = 0) => ({ re, im }),
-            add: (a, b) => ({ re: a.re + b.re, im: a.im + b.im }),
-            subtract: (a, b) => ({ re: a.re - b.re, im: a.im - b.im }),
-            multiply: (a, b) => ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }),
-            multiplyScalar: (c, s) => ({ re: c.re * s, im: c.im * s }),
-            divide: (a, b) => {
-                const d = b.re * b.re + b.im * b.im;
-                if (d === 0) return { re: Infinity, im: Infinity };
-                return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d };
-            },
-            sqrt: c => {
-                const r = Math.sqrt(c.re * c.re + c.im * c.im);
-                const theta = Math.atan2(c.im, c.re);
-                const sqrt_r = Math.sqrt(r);
-                return { re: sqrt_r * Math.cos(theta / 2), im: sqrt_r * Math.sin(theta / 2) };
-            },
-            magnitude: c => Math.sqrt(c.re * c.re + c.im * c.im),
-            sinh: c => {
-                return {
-                    re: Math.sinh(c.re) * Math.cos(c.im),
-                    im: Math.cosh(c.re) * Math.sin(c.im)
-                };
-            },
-            cosh: c => {
-                return {
-                    re: Math.cosh(c.re) * Math.cos(c.im),
-                    im: Math.sinh(c.re) * Math.sin(c.im)
-                };
-            },
-            coth: c => {
-                if (c.re > 30) return { re: 1, im: 0 };
-                if (c.re < -30) return { re: -1, im: 0 };
-                const sinh_c = Complex.sinh(c);
-                const cosh_c = Complex.cosh(c);
-                if (Complex.magnitude(sinh_c) < 1e-14) {
-                    return { re: 1e14, im: 0 };
-                }
-                return Complex.divide(cosh_c, sinh_c);
-            },
-        };
+// Uniform heat flux over a strip of width 2b; temperature averaged over that strip.
+// Convention: Re[T exp(i 2 omega t)], current specified as a peak amplitude.
+const EULER_GAMMA = 0.5772156649015329;
+const CM = {
+ add:(a,b)=>({re:a.re+b.re,im:a.im+b.im}),
+ sub:(a,b)=>({re:a.re-b.re,im:a.im-b.im}),
+ scale:(a,s)=>({re:a.re*s,im:a.im*s}),
+ mul:(a,b)=>({re:a.re*b.re-a.im*b.im,im:a.re*b.im+a.im*b.re}),
+ div:(a,b)=>{const t=Math.max(Math.abs(b.re),Math.abs(b.im));if(!(t>0)||!Number.isFinite(t))throw Error('Invalid thermal denominator.');const r=b.re/t,i=b.im/t,d=r*r+i*i;return {re:(a.re/t*r+a.im/t*i)/d,im:(a.im/t*r-a.re/t*i)/d};},
+ abs:a=>Math.hypot(a.re,a.im),
+ sqrtPositive:(x,y)=>{const r=Math.hypot(x,y),re=Math.sqrt(r/2+x/2);return {re,im:y/(2*re)};},
+ tanh:z=>{
+  // exp(-2z) avoids overflowing hyperbolic functions for thick substrates.
+  if(z.re>20)return {re:1,im:0};
+  if(CM.abs(z)<1e-4){const z2=CM.mul(z,z);return CM.mul(z,CM.add({re:1,im:0},CM.add(CM.scale(z2,-1/3),CM.scale(CM.mul(z2,z2),2/15))));}
+  const e=Math.exp(-2*z.re),c=Math.cos(2*z.im),s=Math.sin(2*z.im);
+  return CM.div({re:-Math.expm1(-2*z.re)+e*(1-c),im:e*s},{re:1+e*c,im:-e*s});
+ }
+};
+function adaptiveComplexSimpson(fn,a,b,tolerance=1e-10) {
+ const evalAt=x=>{const v=fn(x);if(!Number.isFinite(v.re)||!Number.isFinite(v.im))throw Error('Nonfinite thermal integral. Check parameter magnitudes.');return v;};
+ const simpson=(a,b,fa,fm,fb)=>CM.scale(CM.add(CM.add(fa,CM.scale(fm,4)),fb),(b-a)/6);
+ const fa=evalAt(a),fb=evalAt(b),fm=evalAt((a+b)/2),whole=simpson(a,b,fa,fm,fb);
+ const refine=(a,b,fa,fm,fb,whole,tol,depth)=>{
+  const m=(a+b)/2,l=evalAt((a+m)/2),r=evalAt((m+b)/2);
+  const left=simpson(a,m,fa,l,fm),right=simpson(m,b,fm,r,fb),sum=CM.add(left,right),delta=CM.sub(sum,whole),error=CM.abs(delta)/15;
+  if(error<=tol)return {value:CM.add(sum,CM.scale(delta,1/15)),error};
+  if(depth===0)throw Error('Integration did not converge. Parameters are outside the supported numerical range.');
+  const A=refine(a,m,fa,l,fm,left,tol/2,depth-1),B=refine(m,b,fm,r,fb,right,tol/2,depth-1);
+  return {value:CM.add(A.value,B.value),error:A.error+B.error};
+ };
+ return refine(a,b,fa,fm,fb,whole,tolerance,26);
+}
+function thermalIntegral(f,b,D,thickness,boundary='infinite') {
+ if(![f,b,D,thickness].every(v=>Number.isFinite(v)&&v>0))throw Error('Frequency, dimensions and diffusivity must be finite and positive.');
+ if(!['infinite','isothermal'].includes(boundary))throw Error('Unknown substrate boundary condition.');
+ const a=4*Math.PI*f*b*b/D,r=thickness/b;
+ if(!Number.isFinite(a)||a<=0||!Number.isFinite(r))throw Error('Parameter magnitudes exceed the supported numerical range.');
+ const kernel=x=>{
+  const g=CM.sqrtPositive(x*x,a),sinc=x===0?1:Math.sin(x)/x;
+  let impedance;
+  if(boundary==='isothermal'){
+   const z=CM.scale(g,r);
+   // tanh(g r)/g -> r as g r -> 0; retain the complex series.
+   if(CM.abs(z)<1e-4){const z2=CM.mul(z,z);impedance=CM.scale(CM.add({re:1,im:0},CM.add(CM.scale(z2,-1/3),CM.scale(CM.mul(z2,z2),2/15))),r);}
+   else impedance=CM.div(CM.tanh(z),g);
+  }else impedance=CM.div({re:1,im:0},g);
+  return CM.scale(impedance,sinc*sinc);
+ };
+ let value={re:0,im:0},error=0;
+ const addInterval=(lo,hi)=>{const v=adaptiveComplexSimpson(kernel,lo,hi);value=CM.add(value,v.value);error+=v.error;};
+ // Resolve the low-x scale sqrt(a), then sample every sinc lobe separately.
+ let x=Math.min(1,Math.sqrt(a));
+ addInterval(0,x);
+ while(x<1){const next=Math.min(1,2*x);if(next===x)throw Error('Unresolvable thermal length scale.');addInterval(x,next);x=next;}
+ let cutoff=256;
+ for(;;){
+  while(x<cutoff){const next=Math.min(cutoff,x+Math.PI/2);addInterval(x,next);x=next;}
+  // For x>=X: sinc²(x)<=1/x², |g|>=x and |tanh(g r)|<=coth(X r).
+  const boundFactor=boundary==='isothermal'?1/Math.tanh(cutoff*r):1;
+  const tailBound=boundFactor/(2*cutoff*cutoff),estimatedError=error+tailBound;
+  if(estimatedError<=2e-5*CM.abs(value))return {...value,estimatedError,cutoff};
+  if(cutoff>=8192)throw Error('Integral tail tolerance not reached; parameter combination is outside the supported numerical range.');
+  cutoff*=2;
+ }
+}
+function markLogarithmicRange(data){
+ // Check the full complex response against the uniform-strip asymptote,
+ // and the real slope against d Re(J)/d ln(f)=-1/2 on sampled frequencies.
+ data.forEach((p,i)=>{
+  const lo=data[Math.max(0,i-1)],hi=data[Math.min(data.length-1,i+1)];
+  const slope=(hi.Jre-lo.Jre)/(hi.ln_2omega-lo.ln_2omega);
+  const responseError=Math.hypot(p.Jre-p.logJre,p.Jim+Math.PI/4)/Math.hypot(p.Jre,p.Jim);
+  p.logResponseError=responseError;p.logSlopeError=Math.abs(slope+.5)/.5;
+  p.isLinear=Number.isFinite(responseError)&&p.logJre>0&&responseError<=.01&&p.logSlopeError<=.02;
+ });
+ let best=[],current=[];
+ for(const p of data){if(p.isLinear){current.push(p);if(current.length>best.length)best=current.slice();}else current=[];}
+ return best.length>=2?{f_min:best[0].frequency,f_max:best[best.length-1].frequency}:{f_min:NaN,f_max:NaN};
+}
 
-        let fullPlotData = [];
-        let linearityRange = {f_min: 0, f_max: 0};
+let fullPlotData = [];
+let linearityRange = {f_min:NaN,f_max:NaN};
+let simulationGeneration=0,simulationBusy=false;
+function setSimulationStatus(text,isError=false){const el=document.getElementById('simulation-status');el.textContent=text;el.style.color=isError?'#b91c1c':'#475569';}
+function enableExports(enabled){document.getElementById('save-data-button').disabled=!enabled;document.getElementById('save-pdf-button').disabled=!enabled;}
+async function calculate3Omega(){
+ const generation=++simulationGeneration;simulationBusy=true;fullPlotData=[];linearityRange={f_min:NaN,f_max:NaN};enableExports(false);
+ document.getElementById('f-min').textContent='N/A';document.getElementById('f-max').textContent='N/A';document.getElementById('power-rms').textContent='N/A';
+ drawPlot();setSimulationStatus('Calculating…');
+ try{
+ const get=id=>{const s=document.getElementById(id).value.trim();return s===''?NaN:Number(s);};
+ const R0=get('resistance'),L=get('wire-length')*1e-3,b=get('wire-width')*1e-3/2;
+ const alpha=get('tcr'),k=get('kappa-substrate'),d=get('thickness-substrate')*1e-3,D=get('diffusivity-substrate')*1e-6,I=get('current');
+ const bc=document.getElementById('boundary-condition').value;
+ if(![R0,L,b,k,d,D].every(v=>Number.isFinite(v)&&v>0)||!Number.isFinite(alpha)||!Number.isFinite(I)||I<0)throw Error('Resistance, dimensions, conductivity and diffusivity must be positive. Current must be nonnegative; TCR may have either sign.');
+ const power=I*I*R0/(2*L),prefactor=power/(Math.PI*k),voltageFactor=I*R0*alpha/(2*Math.sqrt(2));
+ if(![power,prefactor,voltageFactor].every(Number.isFinite))throw Error('Parameters exceed the supported numerical range.');
+ const data=[],steps=400,logMin=Math.log10(.02),logMax=5;
+ for(let i=0;i<=steps;i++){
+  if(i%16===0){setSimulationStatus(`Calculating ${Math.round(100*i/steps)}%…`);await new Promise(resolve=>setTimeout(resolve,0));if(generation!==simulationGeneration)return;}
+  const f=i===0?.02:i===steps?1e5:10**(logMin+i/steps*(logMax-logMin));
+  const J=thermalIntegral(f,b,D,d,bc),tx=prefactor*J.re,ty=prefactor*J.im;
+  const vx=voltageFactor*tx,vy=voltageFactor*ty;
+  if(![tx,ty,vx,vy].every(Number.isFinite))throw Error('Simulated temperature or voltage exceeds the numerical range.');
+  data.push({ln_2omega:Math.log(4*Math.PI*f),frequency:f,deltaT_in_phase:tx,deltaT_out_of_phase:ty,v3_rms_in_phase:vx,v3_rms_out_of_phase:vy,Jre:J.re,Jim:J.im,
+   logJre:-.5*Math.log(4*Math.PI*f*b*b/D)+1.5-EULER_GAMMA,integration_relative_error:J.estimatedError/CM.abs(J)});
+ }
+ if(generation!==simulationGeneration)return;
+ linearityRange=markLogarithmicRange(data);fullPlotData=data;
+ document.getElementById('power-rms').textContent=power.toExponential(2);
+ const validRange=Number.isFinite(linearityRange.f_min);
+ document.getElementById('f-min').textContent=validRange?linearityRange.f_min.toPrecision(3):'None';
+ document.getElementById('f-max').textContent=validRange?linearityRange.f_max.toPrecision(3):'None';
+ const maxError=Math.max(...data.map(p=>p.integration_relative_error));
+ const maxHeating=Math.max(...data.map(p=>Math.hypot(p.deltaT_in_phase,p.deltaT_out_of_phase)*Math.abs(alpha)));
+ setSimulationStatus(`401 frequencies calculated (0.02–100,000 Hz). Estimated numerical error ≤ ${(maxError*100).toPrecision(2)}% of complex response magnitude. ${validRange?'Highlighted interval passes the sampled log-model checks.':'No sampled interval passes the log-model checks.'}${maxHeating>.05?' Heating is large: the small-signal model may no longer be valid.':''}`);
+ enableExports(true);drawPlot();
+ }catch(e){if(generation!==simulationGeneration)return;fullPlotData=[];setSimulationStatus(e.message,true);drawPlot();}
+ finally{if(generation===simulationGeneration)simulationBusy=false;}
+}
 
-        // --- Core Calculation (Unchanged) ---
-        function calculate3Omega() {
-            const R0 = parseFloat(document.getElementById('resistance').value);
-            const L = parseFloat(document.getElementById('wire-length').value) * 1e-3;
-            const two_b = parseFloat(document.getElementById('wire-width').value) * 1e-3;
-            const b = two_b / 2;
-            const alpha_tcr = parseFloat(document.getElementById('tcr').value);
-            const kappa_s = parseFloat(document.getElementById('kappa-substrate').value);
-            const d_s = parseFloat(document.getElementById('thickness-substrate').value) * 1e-3;
-            const D_s = parseFloat(document.getElementById('diffusivity-substrate').value) * 1e-6;
-            const I0_peak = parseFloat(document.getElementById('current').value);
-            const boundaryCondition = document.getElementById('boundary-condition').value;
-
-            if ([R0, L, two_b, alpha_tcr, kappa_s, d_s, D_s, I0_peak].some(isNaN) || L === 0) {
-                fullPlotData = [];
-                return;
-            }
-
-            const R_per_l = R0 / L;
-            const P_per_l = (I0_peak * I0_peak / 2) * R_per_l;
-            document.getElementById('power-rms').textContent = P_per_l.toExponential(2);
-
-            const data = [];
-            const f_min_log10 = Math.log10(0.02);
-            const f_max_log10 = 5;
-            const steps = 400;
-
-            const N_integ = 1000;
-            const eta_max = 50 / b;
-
-            for (let i = 0; i <= steps; i++) {
-                const f = Math.pow(10, f_min_log10 + (i / steps) * (f_max_log10 - f_min_log10));
-                const omega = 2 * Math.PI * f;
-                const q_squared = Complex.create(0, 2 * omega / D_s);
-
-                const integrand = (eta) => {
-                    const eta_b = eta * b;
-                    const sinc_sq = (eta === 0) ? 1 : Math.pow(Math.sin(eta_b) / eta_b, 2);
-                    const sinc_complex = Complex.create(sinc_sq, 0);
-                    const eta_squared = Complex.create(eta * eta, 0);
-                    const gamma_squared = Complex.add(eta_squared, q_squared);
-                    const gamma = Complex.sqrt(gamma_squared);
-
-                    if (Complex.magnitude(gamma) < 1e-9) return Complex.create(0, 0);
-
-                    let thermal_term;
-                    if (boundaryCondition === 'isothermal') {
-                        const gamma_ds = Complex.multiplyScalar(gamma, d_s);
-                        const coth_gamma_ds = Complex.coth(gamma_ds);
-                        thermal_term = Complex.divide(coth_gamma_ds, gamma);
-                    } else {
-                        thermal_term = Complex.divide(Complex.create(1, 0), gamma);
-                    }
-                    return Complex.multiply(sinc_complex, thermal_term);
-                };
-
-                let integral_result = Complex.create(0, 0);
-                const h = eta_max / N_integ;
-                for (let j = 0; j <= N_integ; j++) {
-                    const eta = j * h;
-                    const term = integrand(eta);
-                    let coeff = (j === 0 || j === N_integ) ? 1 : (j % 2 !== 0 ? 4 : 2);
-                    integral_result = Complex.add(integral_result, Complex.multiplyScalar(term, coeff));
-                }
-                integral_result = Complex.multiplyScalar(integral_result, h / 3);
-
-                const prefactor = P_per_l / (Math.PI * kappa_s);
-                const deltaT_complex = Complex.multiplyScalar(integral_result, prefactor);
-                const V1_peak = I0_peak * R0;
-                const V3_complex_peak = Complex.multiplyScalar(deltaT_complex, 0.5 * V1_peak * alpha_tcr);
-                const V3_complex_rms = Complex.multiplyScalar(V3_complex_peak, 1 / Math.sqrt(2));
-
-                data.push({
-                    ln_2omega: Math.log(2 * omega),
-                    frequency: f,
-                    deltaT_in_phase: deltaT_complex.re,
-                    deltaT_out_of_phase: deltaT_complex.im,
-                    v3_rms_in_phase: V3_complex_rms.re,
-                    v3_rms_out_of_phase: V3_complex_rms.im,
-                });
-            }
-
-            linearityRange.f_min = (25 * D_s) / (4 * Math.PI * d_s * d_s);
-            linearityRange.f_max = D_s / (100 * Math.PI * b * b);
-            document.getElementById('f-min').textContent = linearityRange.f_min.toExponential(2);
-            document.getElementById('f-max').textContent = linearityRange.f_max.toExponential(2);
-            fullPlotData = data;
-        }
-
-        // --- D3.js Plotting (Unchanged) ---
+        // Plotting
         const margin = { top: 60, right: 80, bottom: 90, left: 80 };
-        const container = d3.select("#plot-container");
+        const container = window.d3 ? d3.select("#plot-container") : null;
         let svg, xScale, yScaleLeft, yScaleRight, xAxisBottom, xAxisTop, yAxisLeft, yAxisRight;
         let isPlotInitialized = false;
 
@@ -344,13 +333,19 @@
         }
 
         function drawPlot() {
-            if (fullPlotData.length === 0) return;
+            if (fullPlotData.length === 0) {
+                if(svg)svg.remove();svg=null;isPlotInitialized=false;
+                return;
+            }
             if (!isPlotInitialized) initPlot();
             if (!isPlotInitialized) return;
             const f_min_plot = parseFloat(document.getElementById('plot-fmin').value);
             const f_max_plot = parseFloat(document.getElementById('plot-fmax').value);
             const data = fullPlotData.filter(d => d.frequency >= f_min_plot && d.frequency <= f_max_plot);
-            if (data.length === 0) return;
+            if(!Number.isFinite(f_min_plot)||!Number.isFinite(f_max_plot)||f_min_plot<=0||f_min_plot>=f_max_plot||data.length<2){
+                svg.selectAll('path.line').attr('d',null);
+                return;
+            }
             const bounds = container.node().getBoundingClientRect();
             const width = bounds.width;
             const height = bounds.height;
@@ -360,10 +355,10 @@
             xScale.domain(d3.extent(data, d => d.ln_2omega)).range([0, plotWidth]);
             const tempMin = d3.min(data, d => Math.min(d.deltaT_in_phase, d.deltaT_out_of_phase));
             const tempMax = d3.max(data, d => Math.max(d.deltaT_in_phase, d.deltaT_out_of_phase));
-            yScaleLeft.domain([tempMin, tempMax]).range([plotHeight, 0]).nice();
-            const voltMin = d3.min(data, d => Math.min(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
-            const voltMax = d3.max(data, d => Math.max(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
-            yScaleRight.domain([voltMin, voltMax]).range([plotHeight, 0]).nice();
+            const pad = tempMax===tempMin ? Math.max(Math.abs(tempMax)*0.1,1e-9) : (tempMax-tempMin)*.08;
+            yScaleLeft.domain([tempMin-pad,tempMax+pad]).range([plotHeight,0]).nice();
+            const conversion=Number(document.getElementById('current').value)*Number(document.getElementById('resistance').value)*Number(document.getElementById('tcr').value)/(2*Math.sqrt(2));
+            yScaleRight.domain(conversion===0?[-1e-9,1e-9]:yScaleLeft.domain().map(v=>v*conversion)).range([plotHeight,0]);
             const topXScale = d3.scaleLog().domain(d3.extent(data, d => d.frequency)).range([0, plotWidth]);
             xAxisBottom.attr("transform", `translate(0,${plotHeight})`).call(d3.axisBottom(xScale).ticks(7));
             xAxisTop.call(d3.axisTop(topXScale).ticks(5, ".0e"));
@@ -376,14 +371,14 @@
             svg.select(".legend").attr("transform", `translate(${(plotWidth - 380) / 2 + margin.left}, ${height - 25})`);
             const lineV3x = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_in_phase));
             const lineV3y = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_out_of_phase));
-            svg.select(".line.v3x").datum(data).transition().duration(50).attr("d", lineV3x);
-            svg.select(".line.v3y").datum(data).transition().duration(50).attr("d", lineV3y);
-            const linearData = data.filter(d => d.frequency >= linearityRange.f_min && d.frequency <= linearityRange.f_max);
-            svg.select(".line.v3x.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3x);
-            svg.select(".line.v3y.line-linear").datum(linearData).transition().duration(50).attr("d", lineV3y);
+            svg.select(".line.v3x").datum(data).attr("d", lineV3x);
+            svg.select(".line.v3y").datum(data).attr("d", lineV3y);
+            const linearData = data.filter(d => d.isLinear && d.frequency >= linearityRange.f_min && d.frequency <= linearityRange.f_max);
+            svg.select(".line.v3x.line-linear").datum(linearData).attr("d", lineV3x);
+            svg.select(".line.v3y.line-linear").datum(linearData).attr("d", lineV3y);
         }
 
-        // --- UI and Event Handlers (Unchanged) ---
+        // Controls
         function setupControls() {
             document.querySelectorAll('#controls-panel input[type="number"]').forEach(input => {
                 if(input.id.startsWith('plot-')) return;
@@ -396,51 +391,38 @@
                 calculate3Omega();
                 drawPlot();
             });
-            const fminSlider = document.getElementById('plot-fmin-slider');
-            const fminValue = document.getElementById('plot-fmin');
-            const fmaxSlider = document.getElementById('plot-fmax-slider');
-            const fmaxValue = document.getElementById('plot-fmax');
-            fminSlider.addEventListener('input', () => {
-                const f = Math.pow(10, fminSlider.value);
-                fminValue.value = f.toExponential(2);
-                if (parseFloat(fmaxSlider.value) < parseFloat(fminSlider.value)) {
-                    fmaxSlider.value = fminSlider.value;
-                    fmaxValue.value = f.toExponential(2);
+            const controls=['min','max'].map(key=>({key,slider:document.getElementById('plot-f'+key+'-slider'),input:document.getElementById('plot-f'+key)}));
+            function updateRange(control,fromSlider){
+                let value=fromSlider?10**Number(control.slider.value):Number(control.input.value);
+                if(!Number.isFinite(value)||value<=0){value=control.key==='min'?1:1000;}
+                value=Math.max(.02,Math.min(1e5,value));
+                control.input.value=Number(value.toPrecision(4));
+                const other=controls.find(c=>c!==control);
+                if(control.key==='min'&&value>=Number(other.input.value)){
+                    if(value>=1e5)control.input.value=1e5/1.01;else other.input.value=Math.min(1e5,value*1.01);
                 }
-                drawPlot();
-            });
-             fmaxSlider.addEventListener('input', () => {
-                const f = Math.pow(10, fmaxSlider.value);
-                fmaxValue.value = f.toExponential(2);
-                 if (parseFloat(fmaxSlider.value) < parseFloat(fminSlider.value)) {
-                    fminSlider.value = fmaxSlider.value;
-                    fminValue.value = f.toExponential(2);
+                if(control.key==='max'&&value<=Number(other.input.value)){
+                    if(value<=.02)control.input.value=.0202;else other.input.value=Math.max(.02,value/1.01);
                 }
+                controls.forEach(c=>{c.input.value=Number(Number(c.input.value).toPrecision(4));c.slider.value=Math.log10(Number(c.input.value));});
                 drawPlot();
-            });
-            fminValue.addEventListener('change', () => {
-                fminSlider.value = Math.log10(fminValue.value);
-                drawPlot();
-            });
-            fmaxValue.addEventListener('change', () => {
-                fmaxSlider.value = Math.log10(fmaxValue.value);
-                drawPlot();
-            });
+            }
+            controls.forEach(c=>{c.slider.min=Math.log10(.02);c.slider.max=5;c.input.min=.02;c.input.max=1e5;c.input.step='any';c.slider.addEventListener('input',()=>updateRange(c,true));c.input.addEventListener('change',()=>updateRange(c,false));});
             document.getElementById('save-data-button').addEventListener('click', exportDataFile);
             document.getElementById('save-pdf-button').addEventListener('click', exportPDF);
         }
 
         function exportDataFile() {
             if (fullPlotData.length === 0) return;
-            let content = "# 3-Omega Data (Cahill Model)\n# Parameters:\n";
+            let content = "# 3-Omega Data, uniform-strip width-averaged model, v1.5.0 (14 September 2026)\n# Current: peak A; temperature: peak complex amplitude; voltage: RMS V\n# exp(+i2omega*t) phase convention; adaptive quadrature plus bounded tail\n# Log-model checks: 1% complex response and 2% slope, sampled on the frequency grid\n# Parameters:\n";
             ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current']
                 .forEach(id => content += `# ${document.querySelector(`label[for='${id}']`).textContent}: ${document.getElementById(id).value}\n`);
             const bc_select = document.getElementById('boundary-condition');
             content += `# Boundary Condition: ${bc_select.options[bc_select.selectedIndex].text}\n`;
             content += "# ---\n";
-            content += "ln(2w)\tFreq(Hz)\tDeltaT_in-phase(K)\tDeltaT_out-of-phase(K)\tV3_rms_in-phase(V)\tV3_rms_out-of-phase(V)\n";
+            content += "ln(2w)\tFreq(Hz)\tDeltaT_in-phase(K)\tDeltaT_out-of-phase(K)\tV3_rms_in-phase(V)\tV3_rms_out-of-phase(V)\tIntegration_rel_error_est\tPass_log_checks\n";
             fullPlotData.forEach(row => {
-                content += `${row.ln_2omega.toExponential(4)}\t${row.frequency.toExponential(4)}\t${row.deltaT_in_phase.toExponential(4)}\t${row.deltaT_out_of_phase.toExponential(4)}\t${row.v3_rms_in_phase.toExponential(4)}\t${row.v3_rms_out_of_phase.toExponential(4)}\n`;
+                content += `${row.ln_2omega.toExponential(8)}\t${row.frequency.toExponential(8)}\t${row.deltaT_in_phase.toExponential(8)}\t${row.deltaT_out_of_phase.toExponential(8)}\t${row.v3_rms_in_phase.toExponential(8)}\t${row.v3_rms_out_of_phase.toExponential(8)}\t${row.integration_relative_error.toExponential(2)}\t${row.isLinear?1:0}\n`;
             });
             const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
             const link = document.createElement("a");
@@ -449,10 +431,14 @@
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+            setTimeout(()=>URL.revokeObjectURL(link.href),1000);
         }
 
         // --- Start of Corrected Code ---
         async function exportPDF() {
+            if(simulationBusy||!fullPlotData.length)return;
+            if(!window.jspdf||!window.html2canvas){alert('PDF libraries are unavailable. Check your connection and reload.');return;}
+            const { jsPDF }=window.jspdf;
             const btn = document.getElementById('save-pdf-button');
             btn.textContent = 'Generating...';
             btn.disabled = true;
@@ -480,7 +466,7 @@
                 pdf.text("3-Omega Simulation Report", pageWidth / 2, yPos, { align: 'center' });
                 yPos += 8;
                 pdf.setFontSize(10);
-                pdf.text(`sim_3-omega, v 1.4 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
+                pdf.text(`sim_3-omega, v1.5.0 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
                 yPos += 12;
 
                 // 2. Parameters
@@ -493,7 +479,7 @@
                 pdf.setFontSize(10);
                 const paramIDs = ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current'];
                 const sanitizeLabel = (label) => {
-                    return label.replace(/₀/g, '0').replace(/ₛ/g, 's').replace(/κ/g, 'k').replace(/α/g, 'alpha').replace(/Ω/g, 'Ohm');
+                    return label.replace(/²/g,'2').replace(/₀/g, '0').replace(/ₛ/g, 's').replace(/κ/g, 'k').replace(/α/g, 'alpha').replace(/Ω/g, 'Ohm');
                 };
                 paramIDs.forEach(id => {
                     const originalLabel = document.querySelector(`label[for='${id}']`).textContent;
@@ -507,7 +493,7 @@
                 // 3. Calculated Results
                 yPos += 5;
                 pdf.setFontSize(14);
-                pdf.text("Calculated Results", margin, yPos);
+                pdf.text("Checked Logarithmic Range", margin, yPos);
                 yPos += 6;
                 pdf.line(margin, yPos, pageWidth - margin, yPos);
                 yPos += 8;
@@ -516,8 +502,13 @@
                 yPos += 7;
                 pdf.text(`Max Frequency (f_max): ${document.getElementById('f-max').textContent} Hz`, margin, yPos);
                 yPos += 7;
-                pdf.text(`Power (P_rms/L): ${document.getElementById('power-rms').textContent} W/m`, margin, yPos);
-                yPos += 12;
+                pdf.text(`Average heating power (P/L): ${document.getElementById('power-rms').textContent} W/m`, margin, yPos);
+                yPos += 7;
+                pdf.setFontSize(8);
+                pdf.text('Sampled criteria: <=1% complex response error; <=2% logarithmic slope error.',margin,yPos);
+                yPos += 5;
+                pdf.text('Numerical target: 0.002% of complex response magnitude; no statistical uncertainties.',margin,yPos);
+                yPos += 8;
 
                 // 4. Graph
                 const canvas = await html2canvas(clone, {
@@ -554,7 +545,7 @@
                 // 5. Footer
                 pdf.setFontSize(8);
                 pdf.line(margin, pageHeight - 12, pageWidth - margin, pageHeight - 12);
-                pdf.text('sim_3-omega, v 1.4', margin, pageHeight - 8);
+                pdf.text('sim_3-omega, v1.5.0', margin, pageHeight - 8);
                 pdf.text('NitaD, Univ Paris-Saclay', pageWidth - margin, pageHeight - 8, { align: 'right' });
 
                 pdf.save(`3omega_report_${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`);
@@ -595,6 +586,7 @@
         }
 
         window.addEventListener('load', () => {
+            if(!window.d3){setSimulationStatus('Chart library unavailable. Check your connection and reload.',true);return;}
             setupControls();
             calculate3Omega();
             new ResizeObserver(drawPlot).observe(container.node());
