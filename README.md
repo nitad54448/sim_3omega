@@ -67,7 +67,14 @@ Each parameter is set via numeric input fields in the sidebar.
 Implements Cahill's 3-omega integral model:
 - Complex integration of a sinc²-weighted kernel.
 - Frequency sweep from 0.02 Hz to 10⁵ Hz (log scale).
-- Integration range up to η_max = 50/b using 1000-point Simpson’s rule.
+- Both `index.html` and `infinite_substrate.html` use `thermal-integral.js`.
+- Adaptive complex Simpson integration in the dimensionless coordinate x = ηb
+  resolves the frequency-dependent scale near zero and each sinc lobe.
+- The upper limit expands until the quadrature error estimate plus the bounded
+  omitted tail is at most 0.002% of the complex response magnitude. Failure to
+  converge stops the run, clears its results and disables downloads.
+- Numerical error estimates are shown on the page and recorded in data exports;
+  these estimates do not include model or input-parameter uncertainties.
 
 Main computed quantities:
 - Temperature oscillation: ΔT(ω)
@@ -85,7 +92,7 @@ Main computed quantities:
 
 ## Author
 
-**sim_3-omega, v0.9**  
+**sim_3-omega, v1.5.1**
 NitaD — Univ Paris-Saclay
 
 ---
@@ -93,4 +100,19 @@ NitaD — Univ Paris-Saclay
 ## License
 
 This is a research tool. No warranty implied.
+
+## Review issue 7 and verification
+
+The legacy `infinite_substrate.html` used a fixed 1,000-interval grid that missed
+the narrow low-frequency response. It now uses the same adaptive integrator as
+the current main page. The legacy page is included in Git so this correction is
+available after cloning or deployment. Keep `thermal-integral.js` beside both
+HTML files when copying or deploying the application.
+
+Run `npm test` with Node.js; no dependency installation is required. Tests compare
+the integral against independently refined quadrature after the substitution
+x = sqrt(a) sinh(u), with a = 4 pi f b^2 / D, across four frequency scales. They
+also check the low-frequency asymptote, the finite-boundary thick-substrate
+limit, both complete 401-frequency page calculations, reported numerical error,
+and removal of stale results on convergence failure.
 
