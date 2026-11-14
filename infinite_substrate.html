@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3-Omega Thermal Conductivity Calculator v1.5.1 (Legacy)</title>
+    <title>3-Omega Thermal Conductivity Calculator v1.5.2 (Legacy)</title>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
@@ -150,7 +150,7 @@
             </div>
         </div>
         <footer>
-            <span>sim_3-omega, v1.5.1</span>
+            <span>sim_3-omega, v1.5.2</span>
             <span>NitaD, Univ Paris-Saclay</span>
         </footer>
     </div>
@@ -331,11 +331,11 @@
             xScale.domain(d3.extent(data, d => d.ln_2omega)).range([0, plotWidth]);
             const tempMin = d3.min(data, d => Math.min(d.deltaT_in_phase, d.deltaT_out_of_phase));
             const tempMax = d3.max(data, d => Math.max(d.deltaT_in_phase, d.deltaT_out_of_phase));
-            yScaleLeft.domain([tempMin, tempMax]).range([plotHeight, 0]).nice();
+            const pad = tempMax === tempMin ? Math.max(Math.abs(tempMax) * 0.1, 1e-9) : (tempMax - tempMin) * 0.08;
+            yScaleLeft.domain([tempMin - pad, tempMax + pad]).range([plotHeight, 0]).nice();
 
-            const voltMin = d3.min(data, d => Math.min(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
-            const voltMax = d3.max(data, d => Math.max(d.v3_rms_in_phase, d.v3_rms_out_of_phase));
-            yScaleRight.domain([voltMin, voltMax]).range([plotHeight, 0]).nice();
+            const conversion = Number(document.getElementById('current').value) * Number(document.getElementById('resistance').value) * Number(document.getElementById('tcr').value) / (2 * Math.sqrt(2));
+            yScaleRight.domain(conversion === 0 ? [-1e-9, 1e-9] : yScaleLeft.domain().map(v => v * conversion)).range([plotHeight, 0]);
 
             const topXScale = d3.scaleLog().domain(d3.extent(data, d => d.frequency)).range([0, plotWidth]);
 
@@ -351,8 +351,8 @@
 
             svg.select(".legend").attr("transform", `translate(${(plotWidth - 380) / 2 + margin.left}, ${height - 25})`);
 
-            const lineV3x = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_in_phase));
-            const lineV3y = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleRight(d.v3_rms_out_of_phase));
+            const lineV3x = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleLeft(d.deltaT_in_phase));
+            const lineV3y = d3.line().x(d => xScale(d.ln_2omega)).y(d => yScaleLeft(d.deltaT_out_of_phase));
 
             svg.select(".line.v3x").datum(data).transition().duration(50).attr("d", lineV3x);
             svg.select(".line.v3y").datum(data).transition().duration(50).attr("d", lineV3y);
@@ -410,7 +410,7 @@
 
         function exportDataFile() {
             if (fullPlotData.length === 0) return;
-            let content = "# 3-Omega Data (Cahill Model) v1.5.1\n# Parameters:\n";
+            let content = "# 3-Omega Data (Cahill Model) v1.5.2\n# Parameters:\n";
             ['resistance', 'wire-length', 'wire-width', 'tcr', 'kappa-substrate', 'thickness-substrate', 'diffusivity-substrate', 'current']
                 .forEach(id => content += `# ${document.querySelector(`label[for='${id}']`).textContent}: ${document.getElementById(id).value}\n`);
             content += "# ---\n";
@@ -445,7 +445,7 @@
                 pdf.text("3-Omega Simulation Report", pageWidth / 2, yPos, { align: 'center' });
                 yPos += 8;
                 pdf.setFontSize(10);
-                pdf.text(`sim_3-omega, v1.5.1 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
+                pdf.text(`sim_3-omega, v1.5.2 - Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, yPos, { align: 'center' });
                 yPos += 12;
 
                 // 2. Parameters
